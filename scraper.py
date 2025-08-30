@@ -1,54 +1,99 @@
-from playwright.sync_api import sync_playwright
-import os, time
+# -*- coding: utf-8 -*-
+import asyncio
+import json
+import os
+from playwright.async_api import async_playwright
 
 SESSION_FILE = "session.json"
 LOGIN_URL = "https://hiring.idenhq.com/"
+EMAIL = "pavan.sg@campusuvce.in"
+PASSWORD = "qzn04Z7u"  
 
-def launch_browser():
-    pw = sync_playwright().start()
-    browser = pw.chromium.launch(headless=False, slow_mo=500)
+async def launch_browser():
+    pw = await async_playwright().start()
+    browser = await pw.chromium.launch(headless=False)
+    context = await browser.new_context()
+    page = await context.new_page()
+    return pw, browser, context, page
 
-    if os.path.exists(SESSION_FILE):
-        print("? Loading existing session...")
-        context = browser.new_context(storage_state=SESSION_FILE)
-    else:
-        print("?? No session found. Trying to log in...")
-        context = browser.new_context()
-        page = context.new_page()
-        page.goto(LOGIN_URL)
+async def save_session(context):
+    storage = await context.storage_state()
+    with open(SESSION_FILE, "w", encoding="utf-8") as f:
+        f.write(json.dumps(storage))
+    print("💾 Session saved successfully.")
 
-        # Debug: confirm page loaded
-        print("?? Page title:", page.title())
+async def login_and_save_session():
+    pw, browser, context, page = await launch_browser()
+    print("⚠️ No session found. Logging in...")
 
-        # Fill login form
-        page.fill("input#email", "pavan.sg@campusuvce.in")        # ?? replace with real email
-        page.fill("input#password", "qzn04Z7u")  # ?? replace with real password
-        page.click("button:has-text('Sign in')")
+    await page.goto(LOGIN_URL)
+    await page.wait_for_selector("#email", timeout=30000)
+    await page.fill("#email", EMAIL)
+    await page.fill("#password", PASSWORD)
+    await page.click("button:has-text('Sign in')")
 
-        # Wait for something that only appears after login
-        try:
-            page.wait_for_selector("text=Start Journey", timeout=10000)
-            print("? Login successful, found 'Start Journey'")
-        except:
-            print("? Login may have failed. Check credentials or selectors.")
-            browser.close()
-            pw.stop()
-            exit()
+    
+    await page.wait_for_url("**/dashboard**", timeout=30000) 
+    await asyncio.sleep(3) 
 
-        # Save session
-        context.storage_state(path=SESSION_FILE)
-        print("?? Session saved to", SESSION_FILE)
+   
+    await page.screenshot(path="debug_after_login.png", full_page=True)
+    print("📸 Screenshot saved as debug_after_login.png")
 
-    return pw, browser, context
+    await save_session(context)
+    return pw, browser, context, page
 
-def main():
-    pw, browser, context = launch_browser()
-    page = context.new_page()
-    page.goto(LOGIN_URL)
-    print("?? Ready for next navigation steps...")
-    time.sleep(5)  # keep browser open for manual check
-    browser.close()
-    pw.stop()
+async def load_session(pw):
+    with open(SESSION_FILE, "r", encoding="utf-8") as f:
+        storage = json.load(f)
+    browser = await pw.chromium.launch(headless=False)
+    context = await browser.new_context(storage_state=storage)
+    page = await context.new_page()
+    await page.goto(LOGIN_URL)
+    await page.wait_for_load_state("networkidle")
+    print("🔄 Loaded existing session")
+    return browser, context, page
+
+async def navigate_to_product_table(page):
+    print("Navigating to product table...")
+
+    # Wait for the main container that holds the journey buttons
+    try:
+        await page.wait_for_selector("div:has-text('Start Journey')", timeout=30000)
+        await page.screenshot(path="debug_before_clicks.png", full_page=True)
+        print("Screenshot saved as debug_before_clicks.png")
+
+        # Click sequence
+        await page.click("div:has-text('Start Journey')")
+        await asyncio.sleep(2)
+        await page.click("div:has-text('Continue Search')")
+        await asyncio.sleep(2)
+        await page.click("div:has-text('Inventory Section')")
+        await asyncio.sleep(2)
+        await page.click("div:has-text('Show Product Table')")
+        await asyncio.sleep(3)
+        print("✅ Product table should now be visible.")
+    except Exception as e:
+        print(" Error during navigation:", e)
+        await page.screenshot(path="debug_navigation_error.png", full_page=True)
+        print("Screenshot saved as debug_navigation_error.png")
+
+async def main():
+    pw = await async_playwright().start()
+    try:
+        if os.path.exists(SESSION_FILE):
+            browser, context, page = await load_session(pw)
+        else:
+            pw, browser, context, page = await login_and_save_session()
+
+        await navigate_to_product_table(page)
+
+        input("Press Enter to close browser...")
+        await browser.close()
+    except Exception as e:
+        print("Error:", e)
+    finally:
+        await pw.stop()
 
 if __name__ == "__main__":
-    main()
+    asyncio.run(main())
